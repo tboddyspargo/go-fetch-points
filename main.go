@@ -126,7 +126,6 @@ func GetTransations() ([]Transaction, error) {
 func SaveTransaction(t Transaction) error {
 	allTransactions = append(allTransactions, t)
 	InfoLogger.Println("Added a new transaction: ", t)
-	InfoLogger.Println("Total Transactions: ", len(allTransactions))
 	return nil
 }
 
