@@ -4,7 +4,7 @@
 
 # Considered, But Not Implemented
 
-It wasn't until late in my implementation that I realized that spending is just another kind of transaction creation. Rather than rewind to implement it with that core assumption, I decided to keep my existing implementation, which treats transactions as mutable, expendable data. This may not be appropriate in the real world, but I find that it addresses the core requirements of the project and I think it may have some performance advantages, as well.
+It wasn't until late in my implementation that I realized that spending could be considered just another kind of transaction creation. Rather than rewind my progress to implement it with that core assumption, I decided to keep my existing implementation, which treats transactions as mutable, expendable data. My approach may not be appropriate in the real world, but I find that it addresses the core requirements of the challenge and I think it may have some performance advantages, as well.
 
 # Usage
 
@@ -14,6 +14,8 @@ It wasn't until late in my implementation that I realized that spending is just 
 1. run the command `go run main.go` or `go build; ./fetch-points`
    - This will start a webserver listing on port `8080`. Use the base URL: `http://localhost:8080`.
 1. Using your browser or an API testing application (Postman, Thunder Client, etc.) use the different routes to test the application (see below for more detail on the routes).
+
+> NOTE: You can run the provided unit tests from the command line by navigating to the root of the project and executing `go test`.
 
 # Routes
 
@@ -88,6 +90,7 @@ These log messages can be used for debugging purposes, but can also be aggregate
 # TODO
 
 1. Consider having `/spend` simply add new transactions. This would require creating a separate mechanism for preventing us from having to analyze the full history of transactions all the time.
+1. Backfill tests to better capture behavior. Include negative test cases.
 1. Reduce unnecessary data translations (`[]Transactions` -> `PayerTotal(map[string]int32)` -> `[]PayerBalance`) to improve performance.
 1. Consider using a pre-existing API library for go to reduce customized solutions.
 1. Make sure to only export constants, variables, and functions that we intend/need to expose.
