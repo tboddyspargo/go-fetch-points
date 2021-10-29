@@ -95,5 +95,6 @@ These log messages can be used for debugging purposes, but can also be aggregate
 1. Consider using a pre-existing API library for go to reduce customized solutions.
 1. Make sure to only export constants, variables, and functions that we intend/need to expose.
 1. Separate methods into separate packages. `fetch-points` for main route handling logic, `fetch-points/data` for data retrieval, manipulation, and types.
+1. Provide command line argument options for `--logdir` and `--port`.
 1. Appropriately handle missing attributes or extraneous attributes in the request body for each route.
 1. Compile documentation using `godoc` to avoid repetition.
