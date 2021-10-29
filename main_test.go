@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+var exampleTransactions = []Transaction{
+	{Payer: "DANNON", Points: 1000, Timestamp: "2020-11-02T14:00:00Z"},
+	{Payer: "UNILEVER", Points: 200, Timestamp: "2020-10-31T11:00:00Z"},
+	{Payer: "DANNON", Points: -200, Timestamp: "2020-10-31T15:00:00Z"},
+	{Payer: "MILLER COORS", Points: 10000, Timestamp: "2020-11-01T14:00:00Z"},
+	{Payer: "DANNON", Points: 300, Timestamp: "2020-10-31T10:00:00Z"},
+}
+
 func TestHealthCheckHandler(t *testing.T) {
 	expected := HealthCheck{Status: idleStatus}
 
@@ -31,5 +39,24 @@ func TestHealthCheckHandler(t *testing.T) {
 	}
 	if actual != expected {
 		t.Errorf("handler returned unexpected body: got %v expected %v", recorder.Body.String(), expected)
+	}
+}
+
+func TestSaveTransaction(t *testing.T) {
+
+	for i, tr := range exampleTransactions {
+		SaveTransaction(tr)
+		if len(allTransactions) != i+1 {
+			t.Errorf("save function didn't increase length of global transaction slice: got %v expected %v", len(allTransactions), i+1)
+		}
+		found := false
+		for _, realTr := range allTransactions {
+			if realTr == tr {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("save function didn't add transaction to global transaction slice: got %v expected %v", allTransactions, append(allTransactions, tr))
+		}
 	}
 }
