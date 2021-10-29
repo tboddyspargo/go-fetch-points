@@ -17,6 +17,7 @@ For convenience, I have uploaded a compiled binary executable to this repository
 1. Navigate to the root of the repo
 1. execute the `./fetch-points` executable.
    - This will start a webserver listing on port `8080`. Use the base URL: `http://localhost:8080`.
+1. Using your browser or an API testing application (Postman, Thunder Client, etc.) use the different routes to test the application (see below for more detail on the routes).
 
 ## Running/Compiling from Source
 
