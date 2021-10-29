@@ -12,21 +12,25 @@ It wasn't until late in my implementation that I realized that spending could be
 
 For convenience, I have uploaded a compiled binary executable to this repository. This should minimize the setup required for running the application.
 
-1. Download the repo.
-1. Open a command line prompt (bash, zsh, PowerShell, cmd, etc.)
-1. Navigate to the root of the repo
+1. Download/Clone the repo (unzip, if necessary).
+1. Open a command line prompt (bash, zsh, PowerShell, cmd, etc).
+1. Navigate to the root of the repo.
 1. execute the `./fetch-points` executable.
+   - Please allow the executable to run and to be contacted by the network, if prompted.
    - This will start a webserver listing on port `8080`. Use the base URL: `http://localhost:8080`.
 1. Using your browser or an API testing application (Postman, Thunder Client, etc.) use the different routes to test the application (see below for more detail on the routes).
+   - The easiest route to use to check if the application is running is to use your browser to navigate to `http://localhost:8080/health-check` which will return `{ "status": 0 }` if the application is running.
 
 ## Running/Compiling from Source
 
-1. [Install Go](https://golang.org/doc/install)
-1. Clone this repository, or copy its files to your local machine
-1. Navigate to the root of this repository
-1. run the command `go run main.go` or `go build; ./fetch-points`
+1. [Install Go](https://golang.org/doc/install).
+1. Download/Clone this repository (unzip, if necessary).
+1. Navigate to the root of this repository.
+1. run the command `go run main.go` or `go build; ./fetch-points`.
+   - Please allow the executable to run and to be contacted by the network, if prompted.
    - This will start a webserver listing on port `8080`. Use the base URL: `http://localhost:8080`.
 1. Using your browser or an API testing application (Postman, Thunder Client, etc.) use the different routes to test the application (see below for more detail on the routes).
+   - The easiest route to use to check if the application is running is to use your browser to navigate to `http://localhost:8080/health-check` which will return `{ "status": 0 }` if the application is running.
 
 > NOTE: You can run the provided unit tests from the command line by navigating to the root of the project and executing `go test`.
 
