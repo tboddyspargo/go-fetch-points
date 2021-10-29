@@ -8,6 +8,18 @@ It wasn't until late in my implementation that I realized that spending could be
 
 # Usage
 
+## Running already compiled executable
+
+For convenience, I have uploaded a compiled binary executable to this repository. This should minimize the setup required for running the application.
+
+1. Download the repo.
+1. Open a command line prompt (bash, zsh, PowerShell, cmd, etc.)
+1. Navigate to the root of the repo
+1. execute the `./fetch-points` executable.
+   - This will start a webserver listing on port `8080`. Use the base URL: `http://localhost:8080`.
+
+## Running/Compiling from Source
+
 1. [Install Go](https://golang.org/doc/install)
 1. Clone this repository, or copy its files to your local machine
 1. Navigate to the root of this repository
