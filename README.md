@@ -2,9 +2,13 @@
 
 `fetch-points` is a Go executable package which solves a code challenge assessment for Fetch Rewards. It provides an API as a web service to facilitate user interactions with reward points.
 
+# Considered, But Not Implemented
+
+It wasn't until late in my implementation that I realized that spending is just another kind of transaction creation. Rather than rewind to implement it with that core assumption, I decided to keep my existing implementation, which treats transactions as mutable, expendable data. This may not be appropriate in the real world, but I find that it addresses the core requirements of the project and I think it may have some performance advantages, as well.
+
 # Usage
 
-1. [Install Go https://golang.org/doc/install]
+1. [Install Go](https://golang.org/doc/install)
 1. Clone this repository, or copy its files to your local machine
 1. Navigate to the root of this repository
 1. run the command `go run main.go` or `go build; ./fetch-points`
@@ -27,7 +31,7 @@ This route accepts JSON data with the following attributes:
 
 The application will save the transaction and return success.
 
-Malformatted JSON or other issues with the request body will return an error status code.
+Invalid JSON or other issues with the request body will return an error status code.
 
 ## /payer-points (GET)
 
@@ -35,11 +39,15 @@ This route will return a JSON object representing the current total points assoc
 
 ```json
 [
-  { "payer": "DANNON", "points": -100 },
-  { "payer": "UNILEVER", "points": -200 },
-  { "payer": "MILLER COORS", "points": -4,700 }
+  { "payer": "DANNON", "points": 1100 },
+  { "payer": "UNILEVER", "points": 200 },
+  { "payer": "MILLER COORS", "points": 10000 }
 ]
 ```
+
+If there are no points for a payer, it will not be among the results.
+
+If there are no points available, an empty array will be returned.
 
 ## /spend (POST)
 
@@ -55,6 +63,16 @@ A valid request will contain an object with a points attribute indicating how mu
 
 If the user has sufficient points, they will be used/removed according to the preferred order logic. A JSON object will be returned providing a summary of how many points were used from each payer.
 
+_Example return object_
+
+```json
+[
+  { "payer": "DANNON", "points": -100 },
+  { "payer": "UNILEVER", "points": -200 },
+  { "payer": "MILLER COORS", "points": -4700 }
+]
+```
+
 If the user has insufficient points, an error will be returned and no points will be used/removed.
 
 ## /health-check (GET)
@@ -69,9 +87,10 @@ These log messages can be used for debugging purposes, but can also be aggregate
 
 # TODO
 
-1. Compile documentation using `godoc` to avoid repetition
-1. Make sure to only export constants, variables, and functions that we intend/need to expose.
-1. Separate methods into separate packages. fetch-points for main route handling logic, fetch-points/data for data retrieval, manipulation, and types.
-1. Appropriately handle missing attributes or extraneous attributes in the request body for each route.
-1. Reduce unnecessary data translations ([]Transactions -> PayerTotal -> []PayerBalance) to improve performance.
 1. Consider having `/spend` simply add new transactions. This would require creating a separate mechanism for preventing us from having to analyze the full history of transactions all the time.
+1. Reduce unnecessary data translations (`[]Transactions` -> `PayerTotal(map[string]int32)` -> `[]PayerBalance`) to improve performance.
+1. Consider using a pre-existing API library for go to reduce customized solutions.
+1. Make sure to only export constants, variables, and functions that we intend/need to expose.
+1. Separate methods into separate packages. `fetch-points` for main route handling logic, `fetch-points/data` for data retrieval, manipulation, and types.
+1. Appropriately handle missing attributes or extraneous attributes in the request body for each route.
+1. Compile documentation using `godoc` to avoid repetition.
