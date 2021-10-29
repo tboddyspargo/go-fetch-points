@@ -139,6 +139,7 @@ func SaveTransaction(t Transaction) error {
 // We need to be careful of performance, however. In the current implementation, only unused points are retained in the allTransactions variable.
 // That keeps performance reasonably fast, whereas if we retained all information, we'd want to insert keep track of "markers" that helped us identify
 // used and unused points.
+// WARNING: This deletion logic uses the == operator. This may not be precise enough for the sensitivity of the data. We should make sure that the equality check is precise enough to identify the correct Transaction every time.
 func DeleteTransaction(t Transaction) error {
 	indexToRemove := 0
 	for ; indexToRemove < len(allTransactions); indexToRemove++ {
@@ -226,6 +227,7 @@ func PayerPointsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // SpendPointsHandler provides an http action for spending points agnostic of which payer will be responsible for them.
+// The body of the request is expected to contain a "points" attribute indicating how many points the user would like to spend.
 // Points will be spent in order of oldest to most recent and points will not be spent that bring the balance associated with a particular payer below zero.
 // The response will be in the form of a JSON object representing how many points were used from each payer to satisfy the request.
 func SpendPointsHandler(w http.ResponseWriter, r *http.Request) {
@@ -259,7 +261,7 @@ func SpendPointsHandler(w http.ResponseWriter, r *http.Request) {
 		var remainingToSpend int32 = desiredSpend.Points
 		var pointsToSpend int32
 		spentPayerPoints := PayerTotals{}
-		for i, t := range transactions {
+		for _, t := range transactions {
 			if remainingToSpend <= 0 {
 				break
 			}
@@ -268,7 +270,6 @@ func SpendPointsHandler(w http.ResponseWriter, r *http.Request) {
 			if t.Points < pointsToSpend {
 				pointsToSpend = t.Points
 			}
-			InfoLogger.Println(i, remainingToSpend, pointsToSpend, remainingToSpend-pointsToSpend, t, payerPoints, spentPayerPoints)
 
 			// if using these points won't cause the payer to go negative,
 			if (payerPoints[t.Payer] - pointsToSpend) >= 0 {
@@ -278,8 +279,9 @@ func SpendPointsHandler(w http.ResponseWriter, r *http.Request) {
 				spentPayerPoints[t.Payer] -= pointsToSpend
 
 				if pointsToSpend < t.Points {
-					// If these points aren't all used, update them to reflect what was spent.
-					// Alternatively, we could delete the transaction record and create a new one with the same timestamp and the updated points value.
+					// If these points aren't all used, create a new Transaction object that reflects the points remaining from the original transaction.
+					// The timestamp will be retained from the original, so the logic of "use oldest points first" will continue to be respected.
+					// NOTE: the original transaction will be deleted. This may not be desireable.
 					SaveTransaction(Transaction{Payer: t.Payer, Points: (t.Points - pointsToSpend), Timestamp: t.Timestamp})
 				}
 				// to avoid removing elements from source array while looping over it, defer the deletion

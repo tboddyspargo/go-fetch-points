@@ -2,6 +2,15 @@
 
 `fetch-points` is a Go executable package which solves a code challenge assessment for Fetch Rewards. It provides an API as a web service to facilitate user interactions with reward points.
 
+# Usage
+
+1. [Install Go https://golang.org/doc/install]
+1. Clone this repository, or copy its files to your local machine
+1. Navigate to the root of this repository
+1. run the command `go run main.go` or `go build; ./fetch-points`
+   - This will start a webserver listing on port `8080`. Use the base URL: `http://localhost:8080`.
+1. Using your browser or an API testing application (Postman, Thunder Client, etc.) use the different routes to test the application (see below for more detail on the routes).
+
 # Routes
 
 ## /transactions (POST)
@@ -19,3 +28,50 @@ This route accepts JSON data with the following attributes:
 The application will save the transaction and return success.
 
 Malformatted JSON or other issues with the request body will return an error status code.
+
+## /payer-points (GET)
+
+This route will return a JSON object representing the current total points associated with each payer. It will look like this:
+
+```json
+[
+  { "payer": "DANNON", "points": -100 },
+  { "payer": "UNILEVER", "points": -200 },
+  { "payer": "MILLER COORS", "points": -4,700 }
+]
+```
+
+## /spend (POST)
+
+This route will allow a user to spend points that they have available, preferring older points first and without letting any point balance associated with a payer to go below zero.
+
+A valid request will contain an object with a points attribute indicating how much they would like to spend.
+
+```json
+{
+  "points": 5000
+}
+```
+
+If the user has sufficient points, they will be used/removed according to the preferred order logic. A JSON object will be returned providing a summary of how many points were used from each payer.
+
+If the user has insufficient points, an error will be returned and no points will be used/removed.
+
+## /health-check (GET)
+
+This route provides a basic health check to facilitate application monitoring.
+
+# Logging
+
+By default the application will log to the same folder where the application is located into a file named with the current date in the format: `fetch-points_yyyy-mm-dd.log`.
+
+These log messages can be used for debugging purposes, but can also be aggregated/collected and reviewed for incident response and performance monitoring.
+
+# TODO
+
+1. Compile documentation using `godoc` to avoid repetition
+1. Make sure to only export constants, variables, and functions that we intend/need to expose.
+1. Separate methods into separate packages. fetch-points for main route handling logic, fetch-points/data for data retrieval, manipulation, and types.
+1. Appropriately handle missing attributes or extraneous attributes in the request body for each route.
+1. Reduce unnecessary data translations ([]Transactions -> PayerTotal -> []PayerBalance) to improve performance.
+1. Consider having `/spend` simply add new transactions. This would require creating a separate mechanism for preventing us from having to analyze the full history of transactions all the time.
