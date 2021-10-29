@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -57,6 +59,48 @@ func TestSaveTransaction(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("save function didn't add transaction to global transaction slice: got %v expected %v", allTransactions, append(allTransactions, tr))
+		}
+	}
+}
+
+func TestSpendPointsHandler(t *testing.T) {
+	var expected = []PayerBalance{
+		{Payer: "DANNON", Points: -100},
+		{Payer: "UNILEVER", Points: -200},
+		{Payer: "MILLER COORS", Points: -4700},
+	}
+	var finalExpectedTotals = PayerTotals{
+		"MILLER COORS": 5300,
+		"DANNON":       1000,
+	}
+
+	allTransactions = exampleTransactions
+
+	desiredSpend := Spend{Points: 5000}
+	spendBytes, _ := json.Marshal(desiredSpend)
+	req, err := http.NewRequest("POST", "/spend", bytes.NewReader(spendBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	handler := http.HandlerFunc(SpendPointsHandler)
+	handler.ServeHTTP(recorder, req)
+
+	var actual []PayerBalance
+	mErr := json.NewDecoder(recorder.Body).Decode(&actual)
+	if mErr != nil {
+		t.Fatal(fmt.Errorf("unable to parse JSON response: got %v; error: %v", recorder.Body, mErr))
+	}
+
+	if len(actual) != len(expected) {
+		t.Errorf("handler didn't spend points as expected: got %v expected %v", actual, expected)
+	}
+	actualTotals, _ := GetPayerTotalsMap(nil)
+	for p, expectedTotal := range finalExpectedTotals {
+		actualTotal, ok := actualTotals[p]
+		if !ok || actualTotal != expectedTotal {
+			t.Errorf("handler didn't update payer balances as expected for %v: got %v expected %v", p, actualTotal, expectedTotal)
 		}
 	}
 }

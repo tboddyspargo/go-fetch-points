@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -29,6 +30,26 @@ var (
 // When points are used, they are removed from this slice to help with performance and to prevent points from being spent more than once.
 var allTransactions = []Transaction{}
 
+// byTimestamp is an alias type for a slice of Transaction objects that can be used with sort to improve readability.
+type byTimestamp []Transaction
+
+// Len provides the length of a byTimeStamp object as required by sort.Sort().
+func (t byTimestamp) Len() int { return len(t) }
+
+// Len provides the length of a byTimeStamp object as required by sort.Sort().
+func (t byTimestamp) Swap(i, j int) { t[i], t[j] = t[j], t[i] }
+
+// Less returns a boolean representing wether the element at index i in the byTimeStamp slice
+// is "less than" the element at index j as required by sort.Sort().
+func (t byTimestamp) Less(i, j int) bool {
+	var iDate, iErr = time.Parse(time.RFC3339, t[i].Timestamp)
+	var jDate, jErr = time.Parse(time.RFC3339, t[j].Timestamp)
+	if iErr != nil || jErr != nil {
+		ErrorLogger.Println("invalid timestamp format", t[i], t[j])
+	}
+	return iDate.Before(jDate)
+}
+
 // HealthCheck is a struct for representing the health status of the web service.
 type HealthCheck struct {
 	Status int `json:"status"`
@@ -39,6 +60,11 @@ type Transaction struct {
 	Payer     string `json:"payer"`
 	Timestamp string `json:"timestamp"`
 	Points    int32  `json:"points"`
+}
+
+// Spend is a struct that stores the number of points that a user requests to spend.
+type Spend struct {
+	Points int32 `json:"points"`
 }
 
 // Storing payer totals as a map allows O(1) read and update times.
@@ -52,14 +78,14 @@ type PayerBalance struct {
 
 // GetPayerTotalsMap converts individual transactions into point totals grouped by payer.
 func GetPayerTotalsMap(transactions []Transaction) (PayerTotals, error) {
+	var result = PayerTotals{}
 	if transactions == nil {
 		var err error
 		transactions, err = GetTransations()
 		if err != nil {
-			return nil, err
+			return result, err
 		}
 	}
-	var result = PayerTotals{}
 	for _, t := range transactions {
 		result[t.Payer] += t.Points
 	}
@@ -68,11 +94,27 @@ func GetPayerTotalsMap(transactions []Transaction) (PayerTotals, error) {
 
 // PayerTotalsToPayerBalances converts a PayerTotals map to a slice of PayerBalance objects, which is what the web service is expected to return.
 func PayerTotalsToPayerBalances(pt PayerTotals) []PayerBalance {
-	var result []PayerBalance
+	var result = []PayerBalance{}
 	for k, v := range pt {
 		result = append(result, PayerBalance{Payer: k, Points: v})
 	}
 	return result
+}
+
+// GetTotalPoints returns the sum of all points for all payers.
+func GetTotalPoints(pt PayerTotals) (int32, error) {
+	var total int32
+	if pt == nil {
+		var err error
+		pt, err = GetPayerTotalsMap(nil)
+		if err != nil {
+			return total, err
+		}
+	}
+	for _, v := range pt {
+		total += v
+	}
+	return total, nil
 }
 
 // GetTransactions returns a slice of all the currently available Transaction objects (global allTransactions variable).
@@ -85,6 +127,27 @@ func SaveTransaction(t Transaction) error {
 	allTransactions = append(allTransactions, t)
 	InfoLogger.Println("Added a new transaction: ", t)
 	InfoLogger.Println("Total Transactions: ", len(allTransactions))
+	return nil
+}
+
+// DeleteTransaction removes a Transaction object from the global allTransactions slice.
+// NOTE: If Transactions are sensitive enough to require retention even after they have been used,
+// then we could add new transactions indicating how many points to remove from a payer at the time of spending.
+// OR
+// we could keep a record of all "used" transactions so that those points could be ignored at the next spending request.
+//
+// We need to be careful of performance, however. In the current implementation, only unused points are retained in the allTransactions variable.
+// That keeps performance reasonably fast, whereas if we retained all information, we'd want to insert keep track of "markers" that helped us identify
+// used and unused points.
+func DeleteTransaction(t Transaction) error {
+	indexToRemove := 0
+	for ; indexToRemove < len(allTransactions); indexToRemove++ {
+		if allTransactions[indexToRemove] == t {
+			InfoLogger.Println("deleting Transaction", allTransactions[indexToRemove])
+			break
+		}
+	}
+	allTransactions = append(allTransactions[:indexToRemove], allTransactions[indexToRemove+1:]...)
 	return nil
 }
 
@@ -162,6 +225,85 @@ func PayerPointsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// SpendPointsHandler provides an http action for spending points agnostic of which payer will be responsible for them.
+// Points will be spent in order of oldest to most recent and points will not be spent that bring the balance associated with a particular payer below zero.
+// The response will be in the form of a JSON object representing how many points were used from each payer to satisfy the request.
+func SpendPointsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "POST":
+		var desiredSpend Spend
+
+		err := json.NewDecoder(r.Body).Decode(&desiredSpend)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		transactions, getErr := GetTransations()
+		if getErr != nil {
+			return
+		}
+		sort.Sort(byTimestamp(transactions))
+		InfoLogger.Println(transactions)
+
+		payerPoints, _ := GetPayerTotalsMap(transactions)
+		available, _ := GetTotalPoints(payerPoints)
+
+		if available < desiredSpend.Points {
+			spendErr := fmt.Errorf("insufficient points; requested: %v; available: %v", desiredSpend.Points, available)
+			ErrorLogger.Println(spendErr)
+			http.Error(w, spendErr.Error(), http.StatusBadRequest)
+			return
+		}
+
+		var remainingToSpend int32 = desiredSpend.Points
+		var pointsToSpend int32
+		spentPayerPoints := PayerTotals{}
+		for i, t := range transactions {
+			if remainingToSpend <= 0 {
+				break
+			}
+			// spend all remaining points unless this transaction doesn't have enough to cover what remains to be spent.
+			pointsToSpend = remainingToSpend
+			if t.Points < pointsToSpend {
+				pointsToSpend = t.Points
+			}
+			InfoLogger.Println(i, remainingToSpend, pointsToSpend, remainingToSpend-pointsToSpend, t, payerPoints, spentPayerPoints)
+
+			// if using these points won't cause the payer to go negative,
+			if (payerPoints[t.Payer] - pointsToSpend) >= 0 {
+
+				remainingToSpend -= pointsToSpend
+				payerPoints[t.Payer] -= pointsToSpend
+				spentPayerPoints[t.Payer] -= pointsToSpend
+
+				if pointsToSpend < t.Points {
+					// If these points aren't all used, update them to reflect what was spent.
+					// Alternatively, we could delete the transaction record and create a new one with the same timestamp and the updated points value.
+					SaveTransaction(Transaction{Payer: t.Payer, Points: (t.Points - pointsToSpend), Timestamp: t.Timestamp})
+				}
+				// to avoid removing elements from source array while looping over it, defer the deletion
+				// we could also iterate backwards through the indices to handle this differently.
+				defer DeleteTransaction(t)
+			}
+		}
+
+		resultBytes, parseErr := json.Marshal(PayerTotalsToPayerBalances(spentPayerPoints))
+		if parseErr != nil {
+			ErrorLogger.Println(fmt.Errorf("could not convert object to JSON: %v", parseErr))
+			http.Error(w, parseErr.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		resultJSON := string(resultBytes)
+		InfoLogger.Println(resultJSON)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, resultJSON)
+	default:
+		ErrorLogger.Println(fmt.Errorf("AddTransactionHandler only supports POST requests"))
+	}
+}
+
 // init configures loggers that will be used throughout the package to monitor behaviors.
 // Messages logged will either be INFO (informational) or ERROR (errors).
 // These messages can be structured and additional information added so that they can be aggregated for health and performance monitoring.
@@ -182,6 +324,7 @@ func init() {
 func main() {
 	http.HandleFunc("/health-check", HealthCheckHandler)
 	http.HandleFunc("/transactions", AddTransactionHandler)
+	http.HandleFunc("/spend", SpendPointsHandler)
 	http.HandleFunc("/payer-points", PayerPointsHandler)
 	ErrorLogger.Fatal(http.ListenAndServe(":8080", nil))
 }
