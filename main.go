@@ -41,6 +41,45 @@ type Transaction struct {
 	Points    int32  `json:"points"`
 }
 
+// Storing payer totals as a map allows O(1) read and update times.
+type PayerTotals map[string]int32
+
+// PayerBalance is a struct for storing the number of points associated with a payer.
+type PayerBalance struct {
+	Payer  string `json:"payer"`
+	Points int32  `json:"points"`
+}
+
+// GetPayerTotalsMap converts individual transactions into point totals grouped by payer.
+func GetPayerTotalsMap(transactions []Transaction) (PayerTotals, error) {
+	if transactions == nil {
+		var err error
+		transactions, err = GetTransations()
+		if err != nil {
+			return nil, err
+		}
+	}
+	var result = PayerTotals{}
+	for _, t := range transactions {
+		result[t.Payer] += t.Points
+	}
+	return result, nil
+}
+
+// PayerTotalsToPayerBalances converts a PayerTotals map to a slice of PayerBalance objects, which is what the web service is expected to return.
+func PayerTotalsToPayerBalances(pt PayerTotals) []PayerBalance {
+	var result []PayerBalance
+	for k, v := range pt {
+		result = append(result, PayerBalance{Payer: k, Points: v})
+	}
+	return result
+}
+
+// GetTransactions returns a slice of all the currently available Transaction objects (global allTransactions variable).
+func GetTransations() ([]Transaction, error) {
+	return allTransactions, nil
+}
+
 // SaveTransaction appends a new Transaction object to the end of the global allTransactions slice.
 func SaveTransaction(t Transaction) error {
 	allTransactions = append(allTransactions, t)
@@ -94,6 +133,35 @@ func AddTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// PayerPointsHandler provides an http response in the form of a JSON object representing the total points for every payer.
+func PayerPointsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		transactions, getErr := GetTransations()
+		if getErr != nil {
+			ErrorLogger.Println(fmt.Errorf("unable to retrieve transactions: %v", getErr))
+			http.Error(w, getErr.Error(), http.StatusNotFound)
+			return
+		}
+
+		payerPoints, _ := GetPayerTotalsMap(transactions)
+
+		resultBytes, parseErr := json.Marshal(PayerTotalsToPayerBalances(payerPoints))
+		if parseErr != nil {
+			ErrorLogger.Println(fmt.Errorf("could not convert object to JSON: %v", parseErr))
+			http.Error(w, parseErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		resultJSON := string(resultBytes)
+		InfoLogger.Println(resultJSON)
+		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, resultJSON)
+	default:
+		ErrorLogger.Println(fmt.Errorf("PayerPointsHandler only supports GET requests"))
+	}
+}
+
 // init configures loggers that will be used throughout the package to monitor behaviors.
 // Messages logged will either be INFO (informational) or ERROR (errors).
 // These messages can be structured and additional information added so that they can be aggregated for health and performance monitoring.
@@ -114,5 +182,6 @@ func init() {
 func main() {
 	http.HandleFunc("/health-check", HealthCheckHandler)
 	http.HandleFunc("/transactions", AddTransactionHandler)
+	http.HandleFunc("/payer-points", PayerPointsHandler)
 	ErrorLogger.Fatal(http.ListenAndServe(":8080", nil))
 }
