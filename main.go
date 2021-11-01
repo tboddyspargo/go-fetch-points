@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -26,9 +28,13 @@ var (
 )
 
 // allTransactions is a top-scope variable acting as an in-memory database of transactions.
-// NOTE: this slice only represents AVAILABLE points. i.e. points that have not yet been spent by the user.
-// When points are used, they are removed from this slice to help with performance and to prevent points from being spent more than once.
 var allTransactions = []Transaction{}
+
+// payerTotals is a top-scope variable acting as an in-memory summary of total points per payer.
+var payerTotals = PayerTotals{}
+
+// spentTransactions is a top-scope variable acting as an in-memory, time efficient reference map storing which Transactions have been spent.
+var spentTransactions = SpendLog{}
 
 // byTimestamp is an alias type for a slice of Transaction objects that can be used with sort to improve readability.
 type byTimestamp []Transaction
@@ -50,6 +56,25 @@ func (t byTimestamp) Less(i, j int) bool {
 	return iDate.Before(jDate)
 }
 
+// randomUniqueIDGenerator is a type dedicated to creating random unique IDs.
+type randomUniqueIDGenerator struct {
+	sync.Mutex
+	id int32
+}
+
+// transactionUIDs is a global instance of the randomUniqueIDGenerator type for generating Transaction struct IDs.
+var transactionUIDs randomUniqueIDGenerator
+
+// ID is a method for the randomUiqueIDGenerator struct that creates incrementing ID values.
+func (rui *randomUniqueIDGenerator) ID() int32 {
+	rui.Lock()
+	defer rui.Unlock()
+
+	id := rui.id
+	rui.id++
+	return id
+}
+
 // HealthCheck is a struct for representing the health status of the web service.
 type HealthCheck struct {
 	Status int `json:"status"`
@@ -57,39 +82,28 @@ type HealthCheck struct {
 
 // Transaction is a struct for storing how many points to associate with a payer at a given timestamp.
 type Transaction struct {
+	id        int32
+	awarded   bool
 	Payer     string `json:"payer"`
 	Timestamp string `json:"timestamp"`
 	Points    int32  `json:"points"`
 }
 
-// Spend is a struct that stores the number of points that a user requests to spend.
-type Spend struct {
+// SpendRequest is a struct that stores the number of points that a user requests to spend.
+type SpendRequest struct {
 	Points int32 `json:"points"`
 }
 
-// Storing payer totals as a map allows O(1) read and update times.
+// PayerTotals is an alias for a map with payer name keys and their respective point totals. It provides more efficient lookup and update speeds
 type PayerTotals map[string]int32
 
-// PayerBalance is a struct for storing the number of points associated with a payer.
+// SpendLog is an alias type for a map with transaction id keys and the number of points used from each transaction.
+type SpendLog map[int32]int32
+
+// PayerBalance is a struct for storing the number of points associated with a payer. An array of these is the expected return type of several API routes.
 type PayerBalance struct {
 	Payer  string `json:"payer"`
 	Points int32  `json:"points"`
-}
-
-// GetPayerTotalsMap converts individual transactions into point totals grouped by payer.
-func GetPayerTotalsMap(transactions []Transaction) (PayerTotals, error) {
-	var result = PayerTotals{}
-	if transactions == nil {
-		var err error
-		transactions, err = GetTransations()
-		if err != nil {
-			return result, err
-		}
-	}
-	for _, t := range transactions {
-		result[t.Payer] += t.Points
-	}
-	return result, nil
 }
 
 // PayerTotalsToPayerBalances converts a PayerTotals map to a slice of PayerBalance objects, which is what the web service is expected to return.
@@ -102,53 +116,74 @@ func PayerTotalsToPayerBalances(pt PayerTotals) []PayerBalance {
 }
 
 // GetTotalPoints returns the sum of all points for all payers.
-func GetTotalPoints(pt PayerTotals) (int32, error) {
-	var total int32
-	if pt == nil {
-		var err error
-		pt, err = GetPayerTotalsMap(nil)
-		if err != nil {
-			return total, err
-		}
-	}
-	for _, v := range pt {
+func GetTotalPoints() int32 {
+	var total int32 = 0
+	for _, v := range payerTotals {
 		total += v
 	}
-	return total, nil
+	return total
 }
 
 // GetTransactions returns a slice of all the currently available Transaction objects (global allTransactions variable).
-func GetTransations() ([]Transaction, error) {
+// Consider this a placeholder for a database query.
+func GetTransactions() ([]Transaction, error) {
 	return allTransactions, nil
 }
 
-// SaveTransaction appends a new Transaction object to the end of the global allTransactions slice.
-func SaveTransaction(t Transaction) error {
-	allTransactions = append(allTransactions, t)
-	InfoLogger.Println("Added a new transaction: ", t)
+// Save operates on a Transaction object, adding it to the end of the global allTransactions slice.
+// Consider this a placeholder for a database query.
+func (t *Transaction) Save() error {
+	// Give this transaction a unique ID
+	t.id = transactionUIDs.ID()
+	allTransactions = append(allTransactions, *t)
+	payerTotals[t.Payer] += t.Points
+	InfoLogger.Println("Added a new transaction: ", *t)
 	return nil
 }
 
-// DeleteTransaction removes a Transaction object from the global allTransactions slice.
-// NOTE: If Transactions are sensitive enough to require retention even after they have been used,
-// then we could add new transactions indicating how many points to remove from a payer at the time of spending.
-// OR
-// we could keep a record of all "used" transactions so that those points could be ignored at the next spending request.
-//
-// We need to be careful of performance, however. In the current implementation, only unused points are retained in the allTransactions variable.
-// That keeps performance reasonably fast, whereas if we retained all information, we'd want to insert keep track of "markers" that helped us identify
-// used and unused points.
-// WARNING: This deletion logic uses the == operator. This may not be precise enough for the sensitivity of the data. We should make sure that the equality check is precise enough to identify the correct Transaction every time.
-func DeleteTransaction(t Transaction) error {
-	indexToRemove := 0
-	for ; indexToRemove < len(allTransactions); indexToRemove++ {
-		if allTransactions[indexToRemove] == t {
-			InfoLogger.Println("deleting Transaction", allTransactions[indexToRemove])
-			break
-		}
+// SpendPoints operates on a transaction and removes as many available points as possible to cover the requested amount.
+// Valid transactions have been awarded to users (are not records of users spending points)
+// As long as it will not cause a payer's balance to go below zero, a new transaction will be added to the log indicating how many points were spent.
+// The number of points actually spent will be returned.
+// Consider this a placeholder for a series of database queries.
+func (t *Transaction) SpendPoints(points int32) (int32, error) {
+	var actualSpent int32 = 0
+	toSpend := points
+	available := t.Points
+
+	// If these points were not awarded to the user, then skip them. This means the transaction refers to the user "consuming" his/her own points.
+	if !t.awarded {
+		awdErr := errors.New("SpendPoints() this transaction refers to spent points. You cannot spend points that have already been spent")
+		return actualSpent, awdErr
 	}
-	allTransactions = append(allTransactions[:indexToRemove], allTransactions[indexToRemove+1:]...)
-	return nil
+	// Check to see how many points from this transaction have already been used. Update the amount of points available from it.
+	if spent, ok := spentTransactions[t.id]; ok {
+		// Don't continue if all of these points have already been spent.
+		if spent == t.Points {
+			spentErr := fmt.Errorf("SpendPoints() these points have already been spent. original points: %v, spent: %v", t.Points, spent)
+			return actualSpent, spentErr
+		}
+		available -= spent
+	}
+	// If this transaction doesn't have sufficient points to cover the requested amount, only spend what is available.
+	if available < toSpend {
+		toSpend = available
+	}
+	// If spending these points would bring this payer's balance below zero, don't spend them and return 0 as the number of points spent.
+	if payerTotals[t.Payer]-toSpend < 0 {
+		negErr := fmt.Errorf("SpendPoints() cannot spend points if it would cause a payer's balance to go below zero. available: %v, requested spend: %v", payerTotals[t.Payer], toSpend)
+		return actualSpent, negErr
+	}
+	// Create a new Transaction to register these spent points.
+	// Note that they were not "awarded" to the user. The user is spending them.
+	newT := Transaction{Payer: t.Payer, Points: -toSpend, Timestamp: time.Now().Format(time.RFC3339), awarded: false}
+	if saveErr := newT.Save(); saveErr != nil {
+		// If this new transaction is invalid, simply return 0 - the amount spent from the original transaction.
+		return actualSpent, saveErr
+	}
+	actualSpent = toSpend
+	spentTransactions[t.id] += actualSpent
+	return actualSpent, nil
 }
 
 // HealthCheckHandler provides an http response representing the health status of the web service.
@@ -173,18 +208,23 @@ func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 
 // AddTransactionHandler provides http action for creating new Transaction records.
 // The body of the request is expected to contain the relevant fields for a Transaction object.
+// All Transactions created by this route are expected to be points "awarded" to a user. It should not be used for "spending" points.
 func AddTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "POST":
 		var t Transaction
 
-		if jsonParseErr := json.NewDecoder(r.Body).Decode(&t); jsonParseErr != nil {
-			ErrorLogger.Println("unable to parse POSTed JSON as Transaction object", jsonParseErr)
-			http.Error(w, jsonParseErr.Error(), http.StatusBadRequest)
+		// Populate the transaction object (t) from the body of the request.
+		if parseErr := json.NewDecoder(r.Body).Decode(&t); parseErr != nil {
+			ErrorLogger.Println("unable to parse POSTed JSON as Transaction object", parseErr)
+			http.Error(w, parseErr.Error(), http.StatusBadRequest)
 			return
 		}
 
-		if saveErr := SaveTransaction(t); saveErr != nil {
+		// Assume transactions created using this API route correspond to points that have been 'awarded' to the user (as opposed to spent by the user).
+		t.awarded = true
+
+		if saveErr := t.Save(); saveErr != nil {
 			ErrorLogger.Println("unable to create new transaction object", saveErr)
 			http.Error(w, saveErr.Error(), http.StatusInternalServerError)
 			return
@@ -200,19 +240,10 @@ func AddTransactionHandler(w http.ResponseWriter, r *http.Request) {
 func PayerPointsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		transactions, getErr := GetTransations()
-		if getErr != nil {
-			ErrorLogger.Println(fmt.Errorf("unable to retrieve transactions: %v", getErr))
-			http.Error(w, getErr.Error(), http.StatusNotFound)
-			return
-		}
-
-		payerPoints, _ := GetPayerTotalsMap(transactions)
-
-		resultBytes, parseErr := json.Marshal(PayerTotalsToPayerBalances(payerPoints))
-		if parseErr != nil {
-			ErrorLogger.Println(fmt.Errorf("could not convert object to JSON: %v", parseErr))
-			http.Error(w, parseErr.Error(), http.StatusInternalServerError)
+		resultBytes, mErr := json.Marshal(PayerTotalsToPayerBalances(payerTotals))
+		if mErr != nil {
+			ErrorLogger.Println(fmt.Errorf("could not convert object to JSON: %v", mErr))
+			http.Error(w, mErr.Error(), http.StatusInternalServerError)
 			return
 		}
 		resultJSON := string(resultBytes)
@@ -225,74 +256,56 @@ func PayerPointsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// SpendPointsHandler provides an http action for spending points agnostic of which payer will be responsible for them.
+// SpendPointsHandler provides an http action for spending a specified number of points.
 // The body of the request is expected to contain a "points" attribute indicating how many points the user would like to spend.
-// Points will be spent in order of oldest to most recent and points will not be spent that bring the balance associated with a particular payer below zero.
-// The response will be in the form of a JSON object representing how many points were used from each payer to satisfy the request.
+// Points will be spent in order of oldest to most recent and points will not be spent if doing so would bring the balance associated with a particular payer below zero.
+// The response will be in the form of a JSON array containing objects representing how many points were used from each payer to satisfy the request.
 func SpendPointsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "POST":
-		var desiredSpend Spend
-
+		var desiredSpend SpendRequest
 		err := json.NewDecoder(r.Body).Decode(&desiredSpend)
 		if err != nil {
+			ErrorLogger.Printf("unable to parse json: %v", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		transactions, getErr := GetTransations()
-		if getErr != nil {
-			return
-		}
-		sort.Sort(byTimestamp(transactions))
-		InfoLogger.Println(transactions)
-
-		payerPoints, _ := GetPayerTotalsMap(transactions)
-		available, _ := GetTotalPoints(payerPoints)
-
-		if available < desiredSpend.Points {
-			spendErr := fmt.Errorf("insufficient points; requested: %v; available: %v", desiredSpend.Points, available)
+		totalAvailable := GetTotalPoints()
+		if totalAvailable < desiredSpend.Points {
+			spendErr := fmt.Errorf("insufficient points. requested: %v; available: %v", desiredSpend.Points, totalAvailable)
 			ErrorLogger.Println(spendErr)
 			http.Error(w, spendErr.Error(), http.StatusBadRequest)
 			return
 		}
 
-		var remainingToSpend int32 = desiredSpend.Points
-		var pointsToSpend int32
+		// Sort the transactions in order of oldest to newest.
+		transactions, _ := GetTransactions()
+		sort.Sort(byTimestamp(transactions))
+
+		// Keep track of how many points are spent from each payer to satisfy this request.
 		spentPayerPoints := PayerTotals{}
+
+		var remainingToSpend int32 = desiredSpend.Points
 		for _, t := range transactions {
+			// If all requested points have been spent, we're done
 			if remainingToSpend <= 0 {
 				break
 			}
-			// spend all remaining points unless this transaction doesn't have enough to cover what remains to be spent.
-			pointsToSpend = remainingToSpend
-			if t.Points < pointsToSpend {
-				pointsToSpend = t.Points
+
+			// Attempt to spend the points from this transaction.
+			currentSpent, spendErr := t.SpendPoints(remainingToSpend)
+			if spendErr != nil {
+				continue
 			}
-
-			// if using these points won't cause the payer to go negative,
-			if (payerPoints[t.Payer] - pointsToSpend) >= 0 {
-
-				remainingToSpend -= pointsToSpend
-				payerPoints[t.Payer] -= pointsToSpend
-				spentPayerPoints[t.Payer] -= pointsToSpend
-
-				if pointsToSpend < t.Points {
-					// If these points aren't all used, create a new Transaction object that reflects the points remaining from the original transaction.
-					// The timestamp will be retained from the original, so the logic of "use oldest points first" will continue to be respected.
-					// NOTE: the original transaction will be deleted. This may not be desireable.
-					SaveTransaction(Transaction{Payer: t.Payer, Points: (t.Points - pointsToSpend), Timestamp: t.Timestamp})
-				}
-				// to avoid removing elements from source array while looping over it, defer the deletion
-				// we could also iterate backwards through the indices to handle this differently.
-				defer DeleteTransaction(t)
-			}
+			spentPayerPoints[t.Payer] -= currentSpent
+			remainingToSpend -= currentSpent
 		}
 
-		resultBytes, parseErr := json.Marshal(PayerTotalsToPayerBalances(spentPayerPoints))
-		if parseErr != nil {
-			ErrorLogger.Println(fmt.Errorf("could not convert object to JSON: %v", parseErr))
-			http.Error(w, parseErr.Error(), http.StatusInternalServerError)
+		resultBytes, mErr := json.Marshal(PayerTotalsToPayerBalances(spentPayerPoints))
+		if mErr != nil {
+			ErrorLogger.Println(fmt.Errorf("could not convert object to JSON: %v", mErr))
+			http.Error(w, mErr.Error(), http.StatusInternalServerError)
 			return
 		}
 

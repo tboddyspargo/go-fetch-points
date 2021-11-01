@@ -10,11 +10,18 @@ import (
 )
 
 var exampleTransactions = []Transaction{
-	{Payer: "DANNON", Points: 1000, Timestamp: "2020-11-02T14:00:00Z"},
-	{Payer: "UNILEVER", Points: 200, Timestamp: "2020-10-31T11:00:00Z"},
-	{Payer: "DANNON", Points: -200, Timestamp: "2020-10-31T15:00:00Z"},
-	{Payer: "MILLER COORS", Points: 10000, Timestamp: "2020-11-01T14:00:00Z"},
-	{Payer: "DANNON", Points: 300, Timestamp: "2020-10-31T10:00:00Z"},
+	{Payer: "DANNON", Points: 1000, Timestamp: "2020-11-02T14:00:00Z", awarded: true},
+	{Payer: "UNILEVER", Points: 200, Timestamp: "2020-10-31T11:00:00Z", awarded: true},
+	{Payer: "DANNON", Points: -200, Timestamp: "2020-10-31T15:00:00Z", awarded: true},
+	{Payer: "MILLER COORS", Points: 10000, Timestamp: "2020-11-01T14:00:00Z", awarded: true},
+	{Payer: "DANNON", Points: 300, Timestamp: "2020-10-31T10:00:00Z", awarded: true},
+}
+
+// resetTransactions is used at the beginning of each test to ensure that it starts with an empty "database"
+func resetTransactions() {
+	allTransactions = []Transaction{}
+	payerTotals = PayerTotals{}
+	spentTransactions = SpendLog{}
 }
 
 func TestHealthCheckHandler(t *testing.T) {
@@ -44,39 +51,66 @@ func TestHealthCheckHandler(t *testing.T) {
 	}
 }
 
-func TestSaveTransaction(t *testing.T) {
+func TestSave(t *testing.T) {
+	resetTransactions()
+	startTransactions := allTransactions
+	tr1 := Transaction{Payer: "DANNON", Points: 1000, Timestamp: "2020-10-31T15:00:00Z", awarded: true}
+	saveErr := tr1.Save()
 
-	for i, tr := range exampleTransactions {
-		SaveTransaction(tr)
-		if len(allTransactions) != i+1 {
-			t.Errorf("save function didn't increase length of global transaction slice: got %v expected %v", len(allTransactions), i+1)
+	if saveErr != nil {
+		t.Fatalf("save function returned an error: got %v expected nil", saveErr)
+	} else if len(allTransactions) != len(startTransactions)+1 {
+		t.Errorf("save function didn't increase length of global transaction slice: got %v expected %v", len(allTransactions), len(startTransactions)+1)
+	}
+
+	found1 := false
+	for _, realTr := range allTransactions {
+		if realTr.Payer == tr1.Payer && realTr.Points == tr1.Points && realTr.Timestamp == tr1.Timestamp {
+			found1 = true
 		}
-		found := false
-		for _, realTr := range allTransactions {
-			if realTr == tr {
-				found = true
-			}
+	}
+	if !found1 {
+		t.Errorf("save function didn't add transaction to global transaction slice: got %v expected %v", allTransactions, append(allTransactions, tr1))
+	}
+
+	midTransactions := allTransactions
+
+	tr2 := Transaction{Payer: "UNILEVER", Points: 600, Timestamp: "2020-10-31T13:00:00Z", awarded: true}
+	tr2.Save()
+
+	if saveErr != nil {
+		t.Fatalf("save function returned an error: got %v expected nil", saveErr)
+	} else if len(allTransactions) != len(midTransactions)+1 {
+		t.Errorf("save function didn't increase length of global transaction slice: got %v expected %v", len(allTransactions), len(midTransactions)+1)
+	}
+
+	found2 := false
+	for _, realTr := range allTransactions {
+		if realTr.Payer == tr2.Payer && realTr.Points == tr2.Points && realTr.Timestamp == tr2.Timestamp {
+			found2 = true
 		}
-		if !found {
-			t.Errorf("save function didn't add transaction to global transaction slice: got %v expected %v", allTransactions, append(allTransactions, tr))
-		}
+	}
+	if !found2 {
+		t.Errorf("save function didn't add transaction to global transaction slice: got %v expected %v", allTransactions, append(allTransactions, tr2))
 	}
 }
 
 func TestSpendPointsHandler(t *testing.T) {
+	resetTransactions()
 	var expected = []PayerBalance{
 		{Payer: "DANNON", Points: -100},
 		{Payer: "UNILEVER", Points: -200},
 		{Payer: "MILLER COORS", Points: -4700},
 	}
-	var finalExpectedTotals = PayerTotals{
+	var expectedPayerTotals = PayerTotals{
 		"MILLER COORS": 5300,
 		"DANNON":       1000,
 	}
 
-	allTransactions = exampleTransactions
-
-	desiredSpend := Spend{Points: 5000}
+	for _, tr := range exampleTransactions {
+		tr.Save()
+	}
+	desiredSpend := SpendRequest{Points: 5000}
 	spendBytes, _ := json.Marshal(desiredSpend)
 	req, err := http.NewRequest("POST", "/spend", bytes.NewReader(spendBytes))
 	if err != nil {
@@ -96,11 +130,56 @@ func TestSpendPointsHandler(t *testing.T) {
 	if len(actual) != len(expected) {
 		t.Errorf("handler didn't spend points as expected: got %v expected %v", actual, expected)
 	}
-	actualTotals, _ := GetPayerTotalsMap(nil)
-	for p, expectedTotal := range finalExpectedTotals {
-		actualTotal, ok := actualTotals[p]
-		if !ok || actualTotal != expectedTotal {
+	for p, expectedTotal := range expectedPayerTotals {
+		if actualTotal, ok := payerTotals[p]; !ok || actualTotal != expectedTotal {
 			t.Errorf("handler didn't update payer balances as expected for %v: got %v expected %v", p, actualTotal, expectedTotal)
 		}
 	}
+}
+
+func TestSpendPointsNegative(t *testing.T) {
+	resetTransactions()
+	t1 := Transaction{Payer: "DANNON", Points: 100, Timestamp: "2020-10-31T15:00:00Z", awarded: true}
+	t1.Save()
+	_, spendErr := t1.SpendPoints(200)
+	if spendErr != nil {
+		t.Errorf("method should not allow a payer's balance to go below zero: got nil expected %v", spendErr)
+	}
+}
+
+func TestSpendPoints(t *testing.T) {
+	resetTransactions()
+
+	tr1 := Transaction{Payer: "DANNON", Points: 1000, Timestamp: "2020-10-31T15:00:00Z", awarded: true}
+	tr1.Save()
+
+	tr2 := Transaction{Payer: "UNILEVER", Points: 600, Timestamp: "2020-10-31T13:00:00Z", awarded: true}
+	tr2.Save()
+
+	var spend2a, remain2a int32 = 350, 250
+	tr2.SpendPoints(spend2a)
+
+	if payerTotals[tr2.Payer] != remain2a {
+		t.Errorf("method should reduce the balance for a payer: got %v expected %v", payerTotals[tr2.Payer], remain2a)
+	}
+	if spentTransactions[tr2.id] != spend2a {
+		t.Errorf("method should indicate that points were used from a transaction: got %v expected %v", spentTransactions[tr2.id], spend2a)
+	}
+	if len(allTransactions) != 3 {
+		t.Errorf("method should increase length of allTransactions when points are spent: got %v expected %v", len(allTransactions), 3)
+	}
+
+	var spend2b, remain2b int32 = 200, 50
+	tr2.SpendPoints(spend2b)
+
+	if payerTotals[tr2.Payer] != remain2b {
+		t.Errorf("method should reduce the balance for a payer: got %v expected %v", payerTotals[tr2.Payer], remain2b)
+	}
+	if spentTransactions[tr2.id] != spend2a+spend2b {
+		t.Errorf("method should indicate that points were used from a transaction: got %v expected %v", spentTransactions[tr2.id], spend2a+spend2b)
+	}
+	if len(allTransactions) != 4 {
+		t.Errorf("method should increase length of allTransactions when points are spent: got %v expected %v", len(allTransactions), 4)
+	}
+
 }
