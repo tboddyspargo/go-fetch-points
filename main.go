@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,14 +48,7 @@ func (t byTimestamp) Swap(i, j int) { t[i], t[j] = t[j], t[i] }
 
 // Less returns a boolean representing wether the element at index i in the byTimeStamp slice
 // is "less than" the element at index j as required by sort.Sort().
-func (t byTimestamp) Less(i, j int) bool {
-	var iDate, iErr = time.Parse(time.RFC3339, t[i].Timestamp)
-	var jDate, jErr = time.Parse(time.RFC3339, t[j].Timestamp)
-	if iErr != nil || jErr != nil {
-		ErrorLogger.Println("invalid timestamp format", t[i], t[j])
-	}
-	return iDate.Before(jDate)
-}
+func (t byTimestamp) Less(i, j int) bool { return (t[i].Timestamp).Before(t[j].Timestamp) }
 
 // randomUniqueIDGenerator is a type dedicated to creating random unique IDs.
 type randomUniqueIDGenerator struct {
@@ -82,11 +76,11 @@ type HealthCheck struct {
 
 // Transaction is a struct for storing how many points to associate with a payer at a given timestamp.
 type Transaction struct {
-	id        int32
-	awarded   bool
-	Payer     string `json:"payer"`
-	Timestamp string `json:"timestamp"`
-	Points    int32  `json:"points"`
+	Payer         string    `json:"payer"`
+	Points        int32     `json:"points"`
+	Timestamp     time.Time `json:"timestamp"`
+	userInitiated bool
+	id            int32
 }
 
 // SpendRequest is a struct that stores the number of points that a user requests to spend.
@@ -130,9 +124,48 @@ func GetTransactions() ([]Transaction, error) {
 	return allTransactions, nil
 }
 
+// NewTransaction is a constructor for the Transaction struct that will attempt to convert a string timestamp to a time.Time object.
+// Invalid formats fo the timestamp string will result in error. RFC3339 format is expected.
+func NewTransaction(payer string, points int32, timestamp string, userInit bool) (*Transaction, error) {
+	t, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		return nil, fmt.Errorf("invalid timestamp format: got %v; expected time.RFC3339 format", timestamp)
+	}
+	result := Transaction{
+		Payer:         payer,
+		Points:        points,
+		Timestamp:     t,
+		userInitiated: userInit,
+	}
+	if invalidErr := result.Validate(); invalidErr != nil {
+		return nil, invalidErr
+	}
+	return &result, nil
+}
+
+func (t *Transaction) Validate() error {
+	missingAttributes := []string{}
+	if t.Payer == "" {
+		missingAttributes = append(missingAttributes, "payer")
+	}
+	if t.Points == 0 {
+		missingAttributes = append(missingAttributes, "points")
+	}
+	if t.Timestamp.IsZero() {
+		missingAttributes = append(missingAttributes, "timestamp")
+	}
+	if len(missingAttributes) > 0 {
+		return fmt.Errorf("NewTransaction() Invalid input - missing attributes: %v", missingAttributes)
+	}
+	return nil
+}
+
 // Save operates on a Transaction object, adding it to the end of the global allTransactions slice.
 // Consider this a placeholder for a database query.
 func (t *Transaction) Save() error {
+	if err := t.Validate(); err != nil {
+		return err
+	}
 	// Give this transaction a unique ID
 	t.id = transactionUIDs.ID()
 	allTransactions = append(allTransactions, *t)
@@ -152,7 +185,7 @@ func (t *Transaction) SpendPoints(points int32) (int32, error) {
 	available := t.Points
 
 	// If these points were not awarded to the user, then skip them. This means the transaction refers to the user "consuming" his/her own points.
-	if !t.awarded {
+	if !t.userInitiated {
 		awdErr := errors.New("SpendPoints() this transaction refers to spent points. You cannot spend points that have already been spent")
 		return actualSpent, awdErr
 	}
@@ -176,7 +209,7 @@ func (t *Transaction) SpendPoints(points int32) (int32, error) {
 	}
 	// Create a new Transaction to register these spent points.
 	// Note that they were not "awarded" to the user. The user is spending them.
-	newT := Transaction{Payer: t.Payer, Points: -toSpend, Timestamp: time.Now().Format(time.RFC3339), awarded: false}
+	newT := Transaction{Payer: t.Payer, Points: -toSpend, Timestamp: time.Now(), userInitiated: false}
 	if saveErr := newT.Save(); saveErr != nil {
 		// If this new transaction is invalid, simply return 0 - the amount spent from the original transaction.
 		return actualSpent, saveErr
@@ -186,21 +219,23 @@ func (t *Transaction) SpendPoints(points int32) (int32, error) {
 	return actualSpent, nil
 }
 
+// respondWithJSON is a convenience function that writes to an http.ResponseWriter with JSON output and sets a given StatusCode in the Header.
+func respondWithJSON(w http.ResponseWriter, statusCode int, content interface{}) {
+	response, err := json.Marshal(content)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "%v:\n%v", err, content)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	w.Write(response)
+}
+
 // HealthCheckHandler provides an http response representing the health status of the web service.
 func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		resultBytes, err := json.Marshal(HealthCheck{Status: idleStatus})
-		if err != nil {
-			ErrorLogger.Println(fmt.Errorf("could not convert object to JSON: %v", err))
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		resultJSON := string(resultBytes)
-		InfoLogger.Println(resultJSON)
-		w.WriteHeader(http.StatusOK)
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, resultJSON)
+		respondWithJSON(w, http.StatusOK, HealthCheck{Status: idleStatus})
 	default:
 		ErrorLogger.Println(fmt.Errorf("HealthCheckHandler only supports GET requests"))
 	}
@@ -212,21 +247,23 @@ func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 func AddTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "POST":
+		defer r.Body.Close()
 		var t Transaction
+		body, _ := io.ReadAll(r.Body)
+		InfoLogger.Println(fmt.Sprintf("AddTransactionHandler(): received request: %v", string(body)))
 
 		// Populate the transaction object (t) from the body of the request.
-		if parseErr := json.NewDecoder(r.Body).Decode(&t); parseErr != nil {
-			ErrorLogger.Println("unable to parse POSTed JSON as Transaction object", parseErr)
-			http.Error(w, parseErr.Error(), http.StatusBadRequest)
+		if err := json.NewDecoder(bytes.NewReader(body)).Decode(&t); err != nil {
+			ErrorLogger.Println(err)
+			respondWithJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 			return
 		}
 
 		// Assume transactions created using this API route correspond to points that have been 'awarded' to the user (as opposed to spent by the user).
-		t.awarded = true
-
-		if saveErr := t.Save(); saveErr != nil {
-			ErrorLogger.Println("unable to create new transaction object", saveErr)
-			http.Error(w, saveErr.Error(), http.StatusInternalServerError)
+		t.userInitiated = true
+		if err := t.Save(); err != nil {
+			ErrorLogger.Println(err)
+			respondWithJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 			return
 		}
 
@@ -246,11 +283,10 @@ func PayerPointsHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, mErr.Error(), http.StatusInternalServerError)
 			return
 		}
-		resultJSON := string(resultBytes)
-		InfoLogger.Println(resultJSON)
-		w.WriteHeader(http.StatusOK)
+		InfoLogger.Println(string(resultBytes))
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, resultJSON)
+		w.WriteHeader(http.StatusOK)
+		w.Write(resultBytes)
 	default:
 		ErrorLogger.Println(fmt.Errorf("PayerPointsHandler only supports GET requests"))
 	}
@@ -309,10 +345,9 @@ func SpendPointsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		resultJSON := string(resultBytes)
-		InfoLogger.Println(resultJSON)
+		InfoLogger.Println(string(resultBytes))
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, resultJSON)
+		w.Write(resultBytes)
 	default:
 		ErrorLogger.Println(fmt.Errorf("AddTransactionHandler only supports POST requests"))
 	}
