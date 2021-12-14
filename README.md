@@ -1,42 +1,41 @@
 # Overview
 
-`fetch-points` is a Go executable package which solves a code challenge assessment for Fetch Rewards. It provides an API as a web service to facilitate user interactions with reward points.
-
-# Considered, But Not Implemented
-
-It wasn't until late in my implementation that I realized that spending could be considered just another kind of transaction creation. Rather than rewind my progress to implement it with that core assumption, I decided to keep my existing implementation, which treats transactions as mutable, expendable data. My approach may not be appropriate in the real world, but I find that it addresses the core requirements of the challenge and I think it may have some performance advantages, as well.
+`github.com/tboddyspargo/fetch` is a Go executable module which is a submission for an interview code challenge for Fetch Rewards. It provides an API as a web service to facilitate user interactions with reward points.
 
 # Usage
 
-## Running already compiled executable
+## Installing Binary
 
-For convenience, I have uploaded a compiled binary executable to this repository. This should minimize the setup required for running the application.
-
-1. Download/Clone the repo (unzip, if necessary).
-1. Open a command line prompt (bash, zsh, PowerShell, cmd, etc).
-1. Navigate to the root of the repo.
-1. execute the `./fetch-points` executable.
-   - Please allow the executable to run and to be contacted by the network, if prompted.
-   - This will start a webserver listing on port `8080`. Use the base URL: `http://localhost:8080`.
-1. Using your browser or an API testing application (Postman, Thunder Client, etc.) use the different routes to test the application (see below for more detail on the routes).
-   - The easiest route to use to check if the application is running is to use your browser to navigate to `http://localhost:8080/health-check` which will return `{ "status": 0 }` if the application is running.
+1. [Install Go](https://golang.org/doc/install). Use default `$GOROOT` and `$GOPATH` values.
+1. Open a Command Prompt (bash, vsh, PowerShell, cmd)
+1. Run the command `go install github.com/tboddyspargo/fetch@latest`
+1. The binary `fetch` command should now exist in your `$GOROOT/bin` directory.
+1. Run the command `fetch` (or `$GOROOT/bin/fetch` if `$GOROOT/bin` is not in your $PATH variable)
 
 ## Running/Compiling from Source
 
-1. [Install Go](https://golang.org/doc/install).
-1. Download/Clone this repository (unzip, if necessary).
+1. [Install Go](https://golang.org/doc/install). Use default `$GOROOT` and `$GOPATH` values.
+1. Download/Clone this repository (unzip, if necessary) to your `$HOME` or `$USERPROFILE` directory.
 1. Navigate to the root of this repository.
-1. run the command `go run main.go` or `go build; ./fetch-points`.
+1. Run the command `go build` this will create a `fetch` binary in the root directory.
+1. Execute the binary with the command `./fetch`
    - Please allow the executable to run and to be contacted by the network, if prompted.
-   - This will start a webserver listing on port `8080`. Use the base URL: `http://localhost:8080`.
-1. Using your browser or an API testing application (Postman, Thunder Client, etc.) use the different routes to test the application (see below for more detail on the routes).
+   - This will start a webserver listing on port `8080`. Use the base URL: .
+1. Using your browser or an API testing application (Postman, Thunder Client, etc.) and the base URL `http://localhost:8080`, test the application.
    - The easiest route to use to check if the application is running is to use your browser to navigate to `http://localhost:8080/health-check` which will return `{ "status": 0 }` if the application is running.
 
-> NOTE: You can run the provided unit tests from the command line by navigating to the root of the project and executing `go test`.
+> NOTE: You can run the provided unit tests from the command line by navigating to the root of the project and executing `go test ./...`.
+
+# Command-Line Arguments
+
+| Parameter | Type   | Description                                                                           | Default Value | Example                    |
+| --------- | ------ | ------------------------------------------------------------------------------------- | ------------- | -------------------------- |
+| log-path  | String | The path to a desired log file or an existing directory where logs should be written. | ""            | --log-path /var/log/fetch/ |
+| port      | String | The port to listen on.                                                                | "8080"        | --port 8080                |
 
 # Routes
 
-## /transactions (POST)
+## /transaction (POST)
 
 This route accepts JSON data with the following attributes:
 
@@ -48,9 +47,9 @@ This route accepts JSON data with the following attributes:
 }
 ```
 
-The application will save the transaction and return success.
+The application will save the transaction and return a success status code and a JSON representation of the resulting object.
 
-Invalid JSON or other issues with the request body will return an error status code.
+Invalid JSON or other issues with the request body will return an error status code and JSON.
 
 ## /payer-points (GET)
 
@@ -63,8 +62,6 @@ This route will return a JSON object representing the current total points assoc
   { "payer": "MILLER COORS", "points": 10000 }
 ]
 ```
-
-If there are no points for a payer, it will not be among the results.
 
 If there are no points available, an empty array will be returned.
 
@@ -80,7 +77,7 @@ A valid request will contain an object with a points attribute indicating how mu
 }
 ```
 
-If the user has sufficient points, they will be used/removed according to the preferred order logic. A JSON object will be returned providing a summary of how many points were used from each payer.
+If the user has sufficient points, they will be used/removed according to the preferred order logic. A JSON array will be returned providing a summary of how many points were used from each payer.
 
 _Example return object_
 
@@ -100,18 +97,18 @@ This route provides a basic health check to facilitate application monitoring.
 
 # Logging
 
-By default the application will log to the same folder where the application is located into a file named with the current date in the format: `fetch-points_yyyy-mm-dd.log`.
+By default the application will log to stdout and stderr as well as to a file in same folder where the application is located using the following file naming convention: `fetch-points_yyyy-mm-dd.log`.
 
 These log messages can be used for debugging purposes, but can also be aggregated/collected and reviewed for incident response and performance monitoring.
 
 # TODO
 
-1. Consider having `/spend` simply add new transactions. This would require creating a separate mechanism for preventing us from having to analyze the full history of transactions all the time.
-1. Backfill tests to better capture behavior. Include negative test cases.
-1. Reduce unnecessary data translations (`[]Transactions` -> `PayerTotal(map[string]int32)` -> `[]PayerBalance`) to improve performance.
-1. Consider using a pre-existing API library for go to reduce customized solutions.
-1. Make sure to only export constants, variables, and functions that we intend/need to expose.
-1. Separate methods into separate packages. `fetch-points` for main route handling logic, `fetch-points/data` for data retrieval, manipulation, and types.
-1. Provide command line argument options for `--logdir` and `--port`.
-1. Appropriately handle missing attributes or extraneous attributes in the request body for each route.
-1. Compile documentation using `godoc` to avoid repetition.
+- [x] Consider having `/spend` simply add new transactions. This would require creating a separate mechanism for preventing us from having to analyze the full history of transactions all the time.
+- [x] Backfill tests to better capture behavior. Include negative test cases.
+- [ ] Consider using a pre-existing API library for go to reduce customized solutions.
+- [ ] Make sure to only export constants, variables, and functions that we intend/need to expose.
+- [x] Separate methods into separate packages. `fetch` for main server setup, `fetch/handler` for route handling logic, `fetch/points` for data retrieval, manipulation, and types.
+- [x] Provide command line argument options for `--logdir` and `--port`.
+- [x] Appropriately handle missing attributes or extraneous attributes in the request body for each route.
+- [x] Compile documentation using `godoc` to avoid repetition.
+- [ ] Migrate to goreadme to avoid duplicative documentation.

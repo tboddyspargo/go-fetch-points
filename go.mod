@@ -1,3 +1,3 @@
-module tboddyspargo/fetch-points
+module github.com/tboddyspargo/fetch
 
 go 1.17
